@@ -1303,19 +1303,25 @@ app.post('/api/repo/auto-push/history', (req, res) => {
 // API: Get auto-push statistics
 app.get('/api/repo/auto-push/stats', (req, res) => {
   try {
-    const total = db.prepare('SELECT COUNT(*) as count FROM auto_push_jobs').get();
-    const completed = db.prepare('SELECT COUNT(*) as count FROM auto_push_jobs WHERE status = "completed"').get();
-    const failed = db.prepare('SELECT COUNT(*) as count FROM auto_push_jobs WHERE status = "failed"').get();
-    const cancelled = db.prepare('SELECT COUNT(*) as count FROM auto_push_jobs WHERE status = "cancelled"').get();
+
+    const stats = db.prepare(`
+      SELECT
+        COUNT(*) as total,
+        SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) as completed,
+        SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) as failed,
+        SUM(CASE WHEN status = 'cancelled' THEN 1 ELSE 0 END) as cancelled
+      FROM auto_push_jobs
+    `).get();
+
     const active = autoPushJobs.size;
 
     res.json({
       success: true,
-      total: total.count || 0,
-      completed: completed.count || 0,
-      failed: failed.count || 0,
-      cancelled: cancelled.count || 0,
-      active: active,
+      total: stats.total || 0,
+      completed: stats.completed || 0,
+      failed: stats.failed || 0,
+      cancelled: stats.cancelled || 0,
+      active,
       scheduled: active
     });
 
@@ -1326,6 +1332,7 @@ app.get('/api/repo/auto-push/stats', (req, res) => {
     });
   }
 });
+
 
 function startAutoPushWorker(workspacePath, minutes) {
   const interval = setInterval(async () => {
