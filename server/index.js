@@ -1373,6 +1373,35 @@ app.post('/api/repo/auto-loop', (req, res) => {
   res.json({ success: true, message: "Auto-loop started" });
 });
 
+app.get("/health", (req, res) => {
+  try {
+
+    db.prepare("SELECT 1").get();
+
+    res.json({
+      status: "ok",
+      service: "reposense-server",
+      uptime: process.uptime(),
+      memory: process.memoryUsage().rss,
+      database: "connected",
+      timestamp: new Date().toISOString()
+    });
+
+  } catch (err) {
+
+    res.status(500).json({
+      status: "error",
+      service: "reposense-server",
+      database: "disconnected",
+      error: err.message,
+      timestamp: new Date().toISOString()
+    });
+
+  }
+});
+
+
+
 
 
 app.listen(PORT, () => {
