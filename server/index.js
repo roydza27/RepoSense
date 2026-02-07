@@ -20,6 +20,40 @@ const __dirname = path.dirname(__filename);
 app.use(cors());
 app.use(express.json());
 
+app.use((req, res, next) => {
+
+  const start = Date.now();
+
+  res.on("finish", async () => {
+
+    const payload = {
+      route: req.originalUrl.split("?")[0], // prevents metric explosion
+      method: req.method,
+      status: res.statusCode,
+      responseTime: Date.now() - start,
+      isError: res.statusCode >= 400,
+      sourcePort: 3001,
+      service_name: "reposense"
+    };
+
+    try {
+      await fetch("http://localhost:3002/api/metrics", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+        signal: AbortSignal.timeout(700)
+      });
+    } catch {
+      // telemetry must NEVER break production traffic
+    }
+
+  });
+
+  next();
+});
+
+
+
 // Initialize SQLite database for analytics
 const db = new Database(path.join(__dirname, 'reposense.db'));
 
