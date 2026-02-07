@@ -476,109 +476,156 @@ app.post('/api/repo/delete-branch', async (req, res) => {
 
 // API: Commit and push
 app.post('/api/repo/commit-push', async (req, res) => {
-  const { workspacePath, message, autoPush, forcePush } = req.body;
-  
+  const { workspacePath, message, autoPush = false, forcePush = false } = req.body;
+
   try {
-    // Stage all changes
+
+    // ✅ Stage changes
     const addResult = await executeGit('git add .', workspacePath);
     if (!addResult.success) {
       throw new Error('Failed to stage files: ' + addResult.error);
     }
 
-    // Get diff stats before commit
-    const diffResult = await executeGit('git diff --cached --shortstat', workspacePath);
+    // ✅ Check if changes exist
+    const statusResult = await executeGit('git status --porcelain', workspacePath);
+    const hasChanges = statusResult.output.trim().length > 0;
+
+    let committed = false;
+    let commitHash = null;
     let filesChanged = 0, linesAdded = 0, linesRemoved = 0;
-    
-    if (diffResult.output) {
-      const match = diffResult.output.match(/(\d+) file[s]? changed(?:, (\d+) insertion[s]?\(\+\))?(?:, (\d+) deletion[s]?\(-\))?/);
-      if (match) {
-        filesChanged = parseInt(match[1]) || 0;
-        linesAdded = parseInt(match[2]) || 0;
-        linesRemoved = parseInt(match[3]) || 0;
+
+    // ===============================
+    // COMMIT ONLY IF NEEDED
+    // ===============================
+    if (hasChanges) {
+
+      const diffResult = await executeGit('git diff --cached --shortstat', workspacePath);
+
+      if (diffResult.output) {
+        const match = diffResult.output.match(/(\d+) file[s]? changed(?:, (\d+) insertion[s]?\(\+\))?(?:, (\d+) deletion[s]?\(-\))?/);
+        if (match) {
+          filesChanged = parseInt(match[1]) || 0;
+          linesAdded = parseInt(match[2]) || 0;
+          linesRemoved = parseInt(match[3]) || 0;
+        }
       }
+
+      const commitResult = await executeGit(`git commit -m "${message}"`, workspacePath);
+      if (!commitResult.success) {
+        throw new Error('Commit failed: ' + commitResult.error);
+      }
+
+      committed = true;
+
+      const hashResult = await executeGit('git rev-parse HEAD', workspacePath);
+      commitHash = hashResult.success ? hashResult.output.trim() : null;
+
+      // Save commit
+      db.prepare(`
+        INSERT INTO commits 
+        (repo_path, commit_hash, commit_message, timestamp, files_count, push_success)
+        VALUES (?, ?, ?, ?, ?, ?)
+      `).run(
+        workspacePath,
+        commitHash,
+        message,
+        new Date().toISOString(),
+        filesChanged,
+        0
+      );
     }
 
-    // Commit
-    const commitResult = await executeGit(`git commit -m "${message}"`, workspacePath);
-    if (!commitResult.success) {
-      if (commitResult.error.includes('nothing to commit')) {
-        return res.json({ 
-          success: true, 
-          committed: false,
-          message: 'Nothing to commit, working tree clean' 
-        });
-      }
-      throw new Error('Failed to commit: ' + commitResult.error);
-    }
-
-    // Get commit hash
-    const hashResult = await executeGit('git rev-parse HEAD', workspacePath);
-    const commitHash = hashResult.success ? hashResult.output : 'unknown';
-
-    // Save commit to database
-    db.prepare(`
-      INSERT INTO commits (repo_path, commit_hash, commit_message, timestamp, files_count, push_success)
-      VALUES (?, ?, ?, ?, ?, ?)
-    `).run(workspacePath, commitHash, message, new Date().toISOString(), filesChanged, 0);
+    // ===============================
+    // CHECK IF REPO IS AHEAD
+    // ===============================
+    const aheadCheck = await executeGit('git status -sb', workspacePath);
+    const isAhead = aheadCheck.output.includes('[ahead');
 
     let pushResult = { success: false };
+    let pushed = false;
     let pullNeeded = false;
-    
-    if (autoPush) {
-      // Get current branch
+
+    // ===============================
+    // PUSH IF:
+    // autoPush enabled AND repo ahead
+    // ===============================
+    if (autoPush && isAhead) {
+
       const branchResult = await executeGit('git rev-parse --abbrev-ref HEAD', workspacePath);
-      const currentBranch = branchResult.success ? branchResult.output : 'main';
-      
-      // Try normal push first
-      const pushCommand = forcePush 
-        ? `git push origin ${currentBranch} --force`
-        : `git push origin ${currentBranch}`;
-      
+      const branch = branchResult.success ? branchResult.output.trim() : 'main';
+
+      const pushCommand = forcePush
+        ? `git push origin ${branch} --force`
+        : `git push origin ${branch}`;
+
       pushResult = await executeGit(pushCommand, workspacePath);
-      
-      // If push failed and not force push, check if we need to pull
+
+      pushed = pushResult.success;
+
       if (!pushResult.success && !forcePush) {
-        if (pushResult.error.includes('rejected') || pushResult.error.includes('non-fast-forward')) {
+        if (
+          pushResult.error.includes('rejected') ||
+          pushResult.error.includes('non-fast-forward')
+        ) {
           pullNeeded = true;
         }
       }
-      
-      // Update push success in database
-      if (pushResult.success) {
-        db.prepare('UPDATE commits SET push_success = 1 WHERE commit_hash = ?').run(commitHash);
+
+      // update commit record if exists
+      if (commitHash && pushed) {
+        db.prepare(
+          'UPDATE commits SET push_success = 1 WHERE commit_hash = ?'
+        ).run(commitHash);
       }
     }
 
-    // Log analytics
+    // ===============================
+    // ANALYTICS LOG
+    // ===============================
     db.prepare(`
-      INSERT INTO analytics (repo_path, timestamp, action, files_changed, lines_added, lines_removed, success)
+      INSERT INTO analytics 
+      (repo_path, timestamp, action, files_changed, lines_added, lines_removed, success)
       VALUES (?, ?, ?, ?, ?, ?, ?)
     `).run(
-      workspacePath, 
-      new Date().toISOString(), 
-      'commit_push', 
-      filesChanged, 
-      linesAdded, 
-      linesRemoved, 
-      pushResult.success ? 1 : 0
+      workspacePath,
+      new Date().toISOString(),
+      'commit_push',
+      filesChanged,
+      linesAdded,
+      linesRemoved,
+      pushed ? 1 : 0
     );
 
+    // ===============================
+    // RESPONSE
+    // ===============================
     res.json({
       success: true,
-      committed: true,
-      pushed: pushResult.success,
+      committed,
+      pushed,
+      repoAhead: isAhead,
       commitHash,
       filesChanged,
       linesAdded,
       linesRemoved,
-      pushError: pushResult.success ? null : pushResult.error,
-      pullNeeded: pullNeeded,
-      forcePushed: forcePush && pushResult.success
+      pullNeeded,
+      forcePushed: forcePush && pushed,
+      message: !hasChanges && !isAhead
+        ? "Repo clean and already synced."
+        : undefined
     });
+
   } catch (error) {
-    res.status(500).json({ success: false, error: error.message });
+
+    console.error("Commit-Push Error:", error);
+
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
   }
 });
+
 
 // API: Push only
 app.post('/api/repo/push', async (req, res) => {
