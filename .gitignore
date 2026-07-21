@@ -24,4 +24,4 @@ dist/
 *.db-journal
 *.db-shm
 *.db-wal
-tests/
+frontend/tests/
