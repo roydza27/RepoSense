@@ -1,0 +1,29 @@
+{
+  "name": "reposense-backend",
+  "version": "1.0.0",
+  "description": "RepoSense Backend API - Reports and Analytics",
+  "type": "module",
+  "main": "src/app.js",
+  "scripts": {
+    "start": "node src/app.js",
+    "dev": "node --watch src/app.js",
+    "view-db": "node scripts/viewDb.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [
+    "reposense",
+    "reports",
+    "analytics",
+    "api"
+  ],
+  "author": "RepoSense Team",
+  "license": "MIT",
+  "dependencies": {
+    "better-sqlite3": "^12.0.0",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "^4.18.2",
+    "node-fetch": "^3.3.2"
+  },
+  "devDependencies": {}
+}
